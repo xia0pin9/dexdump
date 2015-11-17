@@ -37,10 +37,16 @@
 # define __LITTLE_ENDIAN 1234
 # if defined(HAVE_LITTLE_ENDIAN)
 #  define __BYTE_ORDER __LITTLE_ENDIAN
+# elif __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#  define __BYTE_ORDER __LITTLE_ENDIAN
 # else
-//#  define __BYTE_ORDER __BIG_ENDIAN
+#  define __BYTE_ORDER __BIG_ENDIAN
 # endif
 #endif /*not HAVE_ENDIAN_H*/
+
+#define XSTR(x) STR(x)
+#define STR(x) #x
+#pragma message "The value of ABC: " XSTR(__BYTE_ORDER)
 
 #if !defined(NDEBUG) && defined(WITH_DALVIK_ASSERT)
 # undef assert
