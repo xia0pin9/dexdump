@@ -49,7 +49,6 @@
 #include <getopt.h>
 #include <errno.h>
 #include <assert.h>
-#include <inttypes.h>
 
 static const char* gProgName = "dexdump";
 
@@ -68,7 +67,6 @@ struct Options {
     bool dumpRegisterMaps;
     OutputFormat outputFormat;
     const char* tempFileName;
-    FILE* outputTarget;
     bool exportsOnly;
     bool verbose;
 };
@@ -607,7 +605,7 @@ void dumpCatches(DexFile* pDexFile, const DexCode* pCode)
     }
 }
 
-static int dumpPositionsCb(void * /* cnxt */, u4 address, u4 lineNum)
+static int dumpPositionsCb(void *cnxt, u4 address, u4 lineNum)
 {
     printf("        0x%04x line=%d\n", address, lineNum);
     return 0;
@@ -629,7 +627,7 @@ void dumpPositions(DexFile* pDexFile, const DexCode* pCode,
             pDexMethod->accessFlags, dumpPositionsCb, NULL, NULL);
 }
 
-static void dumpLocalsCb(void * /* cnxt */, u2 reg, u4 startAddress,
+static void dumpLocalsCb(void *cnxt, u2 reg, u4 startAddress,
         u4 endAddress, const char *name, const char *descriptor,
         const char *signature)
 {
@@ -770,32 +768,32 @@ static char* indexString(DexFile* pDexFile,
         break;
     case kIndexTypeRef:
         if (index < pDexFile->pHeader->typeIdsSize) {
-            outSize = snprintf(buf, bufSize, "%s",      // type@%0*x",
-                               getClassDescriptor(pDexFile, index)); //, index);
+            outSize = snprintf(buf, bufSize, "%s // type@%0*x",
+                               getClassDescriptor(pDexFile, index), width, index);
         } else {
-            outSize = snprintf(buf, bufSize, "<type?>");         // type@%0*x", width, index);
+            outSize = snprintf(buf, bufSize, "<type?> // type@%0*x", width, index);
         }
         break;
     case kIndexStringRef:
         if (index < pDexFile->pHeader->stringIdsSize) {
-            outSize = snprintf(buf, bufSize, "\"%s\"",      // string@%0*x",
-                               dexStringById(pDexFile, index));  //, width, index);
+            outSize = snprintf(buf, bufSize, "\"%s\" // string@%0*x",
+                               dexStringById(pDexFile, index), width, index);
         } else {
-            outSize = snprintf(buf, bufSize, "<string?>");   // string@%0*x",
-                                                            //width, index);
+            outSize = snprintf(buf, bufSize, "<string?> // string@%0*x",
+                               width, index);
         }
         break;
     case kIndexMethodRef:
         {
             FieldMethodInfo methInfo;
             if (getMethodInfo(pDexFile, index, &methInfo)) {
-                outSize = snprintf(buf, bufSize, "%s.%s:%s", // method@%0*x",
+                outSize = snprintf(buf, bufSize, "%s.%s:%s // method@%0*x",
                         methInfo.classDescriptor, methInfo.name,
-                        methInfo.signature);                //, width, index);
+                        methInfo.signature, width, index);
                 free((void *) methInfo.signature);
             } else {
-                outSize = snprintf(buf, bufSize, "<method?>"); // method@%0*x",
-                                                                //width, index);
+                outSize = snprintf(buf, bufSize, "<method?> // method@%0*x",
+                        width, index);
             }
         }
         break;
@@ -803,22 +801,22 @@ static char* indexString(DexFile* pDexFile,
         {
             FieldMethodInfo fieldInfo;
             if (getFieldInfo(pDexFile, index, &fieldInfo)) {
-                outSize = snprintf(buf, bufSize, "%s.%s:%s", // field@%0*x",
+                outSize = snprintf(buf, bufSize, "%s.%s:%s // field@%0*x",
                         fieldInfo.classDescriptor, fieldInfo.name,
-                        fieldInfo.signature);               //, width, index);
+                        fieldInfo.signature, width, index);
             } else {
-                outSize = snprintf(buf, bufSize, "<field?>"); //, field@%0*x",
-                                                                //width, index);
+                outSize = snprintf(buf, bufSize, "<field?> // field@%0*x",
+                        width, index);
             }
         }
         break;
     case kIndexInlineMethod:
-        outSize = snprintf(buf, bufSize, "[%0*x]", // inline #%0*x",
-                width, index);                          //, width, index);
+        outSize = snprintf(buf, bufSize, "[%0*x] // inline #%0*x",
+                width, index, width, index);
         break;
     case kIndexVtableOffset:
-        outSize = snprintf(buf, bufSize, "[%0*x]", // vtable #%0*x",
-                width, index);                      //, width, index);
+        outSize = snprintf(buf, bufSize, "[%0*x] // vtable #%0*x",
+                width, index, width, index);
         break;
     case kIndexFieldOffset:
         outSize = snprintf(buf, bufSize, "[obj+%0*x]", width, index);
@@ -845,31 +843,6 @@ static char* indexString(DexFile* pDexFile,
     }
 }
 
-void escapePut(char *in) {
-    char theChar;
-    while (*in) {
-        theChar = *in++;
-        switch (theChar) {
-        case '\n':
-            fprintf(gOptions.outputTarget, "\\n");
-            break;
-        case '\r':
-            fprintf(gOptions.outputTarget, "\\r");
-            break;
-        case '\t':
-            fprintf(gOptions.outputTarget, "\\t");
-            break;
-        default:
-            if ((theChar < 0x20) || (theChar > 0x7f)) {
-                fprintf(gOptions.outputTarget, "\\%03o", (unsigned char)theChar);
-            } else {
-                fprintf(gOptions.outputTarget, "%c", theChar);
-            }
-            break;
-        }  
-    }
-}
-
 /*
  * Dump a single instruction.
  */
@@ -881,40 +854,37 @@ void dumpInstruction(DexFile* pDexFile, const DexCode* pCode, int insnIdx,
     const u2* insns = pCode->insns;
     int i;
 
-    //// Address of instruction (expressed as byte offset).
-    //fprintf(gOptions.outputTarget, "%06zx:", ((u1*)insns - pDexFile->baseAddr) + insnIdx*2);
-
-    //for (i = 0; i < 8; i++) {
-    //    if (i < insnWidth) {
-    //        if (i == 7) {
-    //            printf(" ... ");
-    //        } else {
-    //            /* print 16-bit value in little-endian order */
-    //            const u1* bytePtr = (const u1*) &insns[insnIdx+i];
-    //            printf(" %02x%02x", bytePtr[0], bytePtr[1]);
-    //        }
-    //    } else {
-    //        fputs("     ", stdout);
-    //    }
-    //}
+    printf("%06x:", ((u1*)insns - pDexFile->baseAddr) + insnIdx*2);
+    for (i = 0; i < 8; i++) {
+        if (i < insnWidth) {
+            if (i == 7) {
+                printf(" ... ");
+            } else {
+                /* print 16-bit value in little-endian order */
+                const u1* bytePtr = (const u1*) &insns[insnIdx+i];
+                printf(" %02x%02x", bytePtr[0], bytePtr[1]);
+            }
+        } else {
+            fputs("     ", stdout);
+        }
+    }
 
     if (pDecInsn->opcode == OP_NOP) {
         u2 instr = get2LE((const u1*) &insns[insnIdx]);
         if (instr == kPackedSwitchSignature) {
-            //fprintf(gOptions.outputTarget, "%04d: packed-switch-data (%d units)",
-            fprintf(gOptions.outputTarget, "packed-switch-data (%d units)",
-                insnWidth);
+            printf("|%04x: packed-switch-data (%d units)",
+                insnIdx, insnWidth);
         } else if (instr == kSparseSwitchSignature) {
-            fprintf(gOptions.outputTarget, "sparse-switch-data (%d units)",
-                insnWidth);
+            printf("|%04x: sparse-switch-data (%d units)",
+                insnIdx, insnWidth);
         } else if (instr == kArrayDataSignature) {
-            fprintf(gOptions.outputTarget, "array-data (%d units)",
-                insnWidth);
+            printf("|%04x: array-data (%d units)",
+                insnIdx, insnWidth);
         } else {
-            fprintf(gOptions.outputTarget, "nop");
+            printf("|%04x: nop // spacer", insnIdx);
         }
     } else {
-        fprintf(gOptions.outputTarget, "%s", dexGetOpcodeName(pDecInsn->opcode));
+        printf("|%04x: %s", insnIdx, dexGetOpcodeName(pDecInsn->opcode));
     }
 
     if (pDecInsn->indexType != kIndexNone) {
@@ -926,87 +896,83 @@ void dumpInstruction(DexFile* pDexFile, const DexCode* pCode, int insnIdx,
     case kFmt10x:        // op
         break;
     case kFmt12x:        // op vA, vB
-        fprintf(gOptions.outputTarget, " v%d, v%d", pDecInsn->vA, pDecInsn->vB);
+        printf(" v%d, v%d", pDecInsn->vA, pDecInsn->vB);
         break;
     case kFmt11n:        // op vA, #+B
-        fprintf(gOptions.outputTarget, " v%d, #int %d", // // #%x",
-            pDecInsn->vA, (s4)pDecInsn->vB);            //, (u1)pDecInsn->vB);
+        printf(" v%d, #int %d // #%x",
+            pDecInsn->vA, (s4)pDecInsn->vB, (u1)pDecInsn->vB);
         break;
     case kFmt11x:        // op vAA
-        fprintf(gOptions.outputTarget, " v%d", pDecInsn->vA);
+        printf(" v%d", pDecInsn->vA);
         break;
     case kFmt10t:        // op +AA
     case kFmt20t:        // op +AAAA
         {
             s4 targ = (s4) pDecInsn->vA;
-            fprintf(gOptions.outputTarget, " %04x",    // // %c%04x",
-                insnIdx + targ);                        //,
-                                                        //(targ < 0) ? '-' : '+',
-                                                        //(targ < 0) ? -targ : targ);
+            printf(" %04x // %c%04x",
+                insnIdx + targ,
+                (targ < 0) ? '-' : '+',
+                (targ < 0) ? -targ : targ);
         }
         break;
     case kFmt22x:        // op vAA, vBBBB
-        fprintf(gOptions.outputTarget, " v%d, v%d", pDecInsn->vA, pDecInsn->vB);
+        printf(" v%d, v%d", pDecInsn->vA, pDecInsn->vB);
         break;
     case kFmt21t:        // op vAA, +BBBB
         {
             s4 targ = (s4) pDecInsn->vB;
-            fprintf(gOptions.outputTarget, " v%d, %04x", //// %c%04x", 
-                pDecInsn->vA,
-                insnIdx + targ);                        //,
-                                                        //(targ < 0) ? '-' : '+',
-                                                        //(targ < 0) ? -targ : targ);
+            printf(" v%d, %04x // %c%04x", pDecInsn->vA,
+                insnIdx + targ,
+                (targ < 0) ? '-' : '+',
+                (targ < 0) ? -targ : targ);
         }
         break;
     case kFmt21s:        // op vAA, #+BBBB
-        fprintf(gOptions.outputTarget, " v%d, #int %d",    // #%x",
-            pDecInsn->vA, (s4)pDecInsn->vB);            //, (u2)pDecInsn->vB);
+        printf(" v%d, #int %d // #%x",
+            pDecInsn->vA, (s4)pDecInsn->vB, (u2)pDecInsn->vB);
         break;
     case kFmt21h:        // op vAA, #+BBBB0000[00000000]
         // The printed format varies a bit based on the actual opcode.
         if (pDecInsn->opcode == OP_CONST_HIGH16) {
             s4 value = pDecInsn->vB << 16;
-            fprintf(gOptions.outputTarget, " v%d, #int %d", // #%x",
-                pDecInsn->vA, value);                   //, (u2)pDecInsn->vB);
+            printf(" v%d, #int %d // #%x",
+                pDecInsn->vA, value, (u2)pDecInsn->vB);
         } else {
             s8 value = ((s8) pDecInsn->vB) << 48;
-            fprintf(gOptions.outputTarget, " v%d, #long %d I64d", // #%x",
-                pDecInsn->vA, value);                   //, (u2)pDecInsn->vB);
+            printf(" v%d, #long %lld // #%x",
+                pDecInsn->vA, value, (u2)pDecInsn->vB);
         }
         break;
     case kFmt21c:        // op vAA, thing@BBBB
     case kFmt31c:        // op vAA, thing@BBBBBBBB
-        //fprintf(gOptions.outputTarget, " v%d, %s", pDecInsn->vA, indexBuf);
-        fprintf(gOptions.outputTarget, " v%d, ", pDecInsn->vA);
-        escapePut(indexBuf);
+        printf(" v%d, %s", pDecInsn->vA, indexBuf);
         break;
     case kFmt23x:        // op vAA, vBB, vCC
-        fprintf(gOptions.outputTarget, " v%d, v%d, v%d", pDecInsn->vA, pDecInsn->vB, pDecInsn->vC);
+        printf(" v%d, v%d, v%d", pDecInsn->vA, pDecInsn->vB, pDecInsn->vC);
         break;
     case kFmt22b:        // op vAA, vBB, #+CC
-        fprintf(gOptions.outputTarget, " v%d, v%d, #int %d", // #%02x",
-            pDecInsn->vA, pDecInsn->vB, (s4)pDecInsn->vC);  //, (u1)pDecInsn->vC);
+        printf(" v%d, v%d, #int %d // #%02x",
+            pDecInsn->vA, pDecInsn->vB, (s4)pDecInsn->vC, (u1)pDecInsn->vC);
         break;
     case kFmt22t:        // op vA, vB, +CCCC
         {
             s4 targ = (s4) pDecInsn->vC;
-            fprintf(gOptions.outputTarget, " v%d, v%d, %04x", // %c%04x", 
-                pDecInsn->vA, pDecInsn->vB,
-                insnIdx + targ);                            //,
-                                                            //(targ < 0) ? '-' : '+',
-                                                            //(targ < 0) ? -targ : targ);
+            printf(" v%d, v%d, %04x // %c%04x", pDecInsn->vA, pDecInsn->vB,
+                insnIdx + targ,
+                (targ < 0) ? '-' : '+',
+                (targ < 0) ? -targ : targ);
         }
         break;
     case kFmt22s:        // op vA, vB, #+CCCC
-        fprintf(gOptions.outputTarget, " v%d, v%d, #int %d", // #%04x",
-            pDecInsn->vA, pDecInsn->vB, (s4)pDecInsn->vC);  //, (u2)pDecInsn->vC);
+        printf(" v%d, v%d, #int %d // #%04x",
+            pDecInsn->vA, pDecInsn->vB, (s4)pDecInsn->vC, (u2)pDecInsn->vC);
         break;
     case kFmt22c:        // op vA, vB, thing@CCCC
     case kFmt22cs:       // [opt] op vA, vB, field offset CCCC
-        fprintf(gOptions.outputTarget, " v%d, v%d, %s", pDecInsn->vA, pDecInsn->vB, indexBuf);
+        printf(" v%d, v%d, %s", pDecInsn->vA, pDecInsn->vB, indexBuf);
         break;
     case kFmt30t:
-        fprintf(gOptions.outputTarget, " #%08x", pDecInsn->vA);
+        printf(" #%08x", pDecInsn->vA);
         break;
     case kFmt31i:        // op vAA, #+BBBBBBBB
         {
@@ -1016,29 +982,29 @@ void dumpInstruction(DexFile* pDexFile, const DexCode* pCode, int insnIdx,
                 u4 i;
             } conv;
             conv.i = pDecInsn->vB;
-            fprintf(gOptions.outputTarget, " v%d, #float %f", // #%08x",
-                pDecInsn->vA, conv.f);                      //, pDecInsn->vB);
+            printf(" v%d, #float %f // #%08x",
+                pDecInsn->vA, conv.f, pDecInsn->vB);
         }
         break;
     case kFmt31t:       // op vAA, offset +BBBBBBBB
-        fprintf(gOptions.outputTarget, " v%d, %08x",        // +%08x",
-            pDecInsn->vA, insnIdx + pDecInsn->vB);          //, pDecInsn->vB);
+        printf(" v%d, %08x // +%08x",
+            pDecInsn->vA, insnIdx + pDecInsn->vB, pDecInsn->vB);
         break;
     case kFmt32x:        // op vAAAA, vBBBB
-        fprintf(gOptions.outputTarget, " v%d, v%d", pDecInsn->vA, pDecInsn->vB);
+        printf(" v%d, v%d", pDecInsn->vA, pDecInsn->vB);
         break;
     case kFmt35c:        // op {vC, vD, vE, vF, vG}, thing@BBBB
     case kFmt35ms:       // [opt] invoke-virtual+super
     case kFmt35mi:       // [opt] inline invoke
         {
-            fputs(" {", gOptions.outputTarget);
+            fputs(" {", stdout);
             for (i = 0; i < (int) pDecInsn->vA; i++) {
                 if (i == 0)
-                    fprintf(gOptions.outputTarget, "v%d", pDecInsn->arg[i]);
+                    printf("v%d", pDecInsn->arg[i]);
                 else
-                    fprintf(gOptions.outputTarget, ", v%d", pDecInsn->arg[i]);
+                    printf(", v%d", pDecInsn->arg[i]);
             }
-            fprintf(gOptions.outputTarget, "}, %s", indexBuf);
+            printf("}, %s", indexBuf);
         }
         break;
     case kFmt3rc:        // op {vCCCC .. v(CCCC+AA-1)}, thing@BBBB
@@ -1049,14 +1015,14 @@ void dumpInstruction(DexFile* pDexFile, const DexCode* pCode, int insnIdx,
              * This doesn't match the "dx" output when some of the args are
              * 64-bit values -- dx only shows the first register.
              */
-            fputs(" {", gOptions.outputTarget);
+            fputs(" {", stdout);
             for (i = 0; i < (int) pDecInsn->vA; i++) {
                 if (i == 0)
-                    fprintf(gOptions.outputTarget, "v%d", pDecInsn->vC + i);
+                    printf("v%d", pDecInsn->vC + i);
                 else
-                    fprintf(gOptions.outputTarget, ", v%d", pDecInsn->vC + i);
+                    printf(", v%d", pDecInsn->vC + i);
             }
-            fprintf(gOptions.outputTarget, "}, %s", indexBuf);
+            printf("}, %s", indexBuf);
         }
         break;
     case kFmt51l:        // op vAA, #+BBBBBBBBBBBBBBBB
@@ -1067,19 +1033,18 @@ void dumpInstruction(DexFile* pDexFile, const DexCode* pCode, int insnIdx,
                 u8 j;
             } conv;
             conv.j = pDecInsn->vB_wide;
-            fprintf(gOptions.outputTarget, " v%d, #double %f I64x", // #%016" PRIx64,
-                pDecInsn->vA, conv.d);                      //, pDecInsn->vB_wide);
+            printf(" v%d, #double %f // #%016llx",
+                pDecInsn->vA, conv.d, pDecInsn->vB_wide);
         }
         break;
     case kFmt00x:        // unknown op or breakpoint
         break;
     default:
-        fprintf(gOptions.outputTarget, " ???");
+        printf(" ???");
         break;
     }
 
-    //putchar('\n');
-    fputc('\n', gOptions.outputTarget);
+    putchar('\n');
 
     if (indexBuf != indexBufChars) {
         free(indexBuf);
@@ -1089,7 +1054,7 @@ void dumpInstruction(DexFile* pDexFile, const DexCode* pCode, int insnIdx,
 /*
  * Dump a bytecode disassembly.
  */
-void dumpBytecodes(DexFile* pDexFile, const DexMethod* pDexMethod, int * mcount)
+void dumpBytecodes(DexFile* pDexFile, const DexMethod* pDexMethod)
 {
     const DexCode* pCode = dexGetCode(pDexFile, pDexMethod);
     const u2* insns;
@@ -1101,18 +1066,13 @@ void dumpBytecodes(DexFile* pDexFile, const DexMethod* pDexMethod, int * mcount)
     assert(pCode->insnsSize > 0);
     insns = pCode->insns;
 
-    methInfo.classDescriptor =
-    methInfo.name =
-    methInfo.signature = NULL;
-
     getMethodInfo(pDexFile, pDexMethod->methodIdx, &methInfo);
     startAddr = ((u1*)pCode - pDexFile->baseAddr);
     className = descriptorToDot(methInfo.classDescriptor);
 
-    //printf("%06x:                                        |[%06x] %s.%s:%s\n",
-    //    startAddr, startAddr,
-    fprintf(gOptions.outputTarget, "Method(%d): L%s.%s:%s\n", 
-        *mcount, className, methInfo.name, methInfo.signature);
+    printf("%06x:                                        |[%06x] %s.%s:%s\n",
+        startAddr, startAddr,
+        className, methInfo.name, methInfo.signature);
     free((void *) methInfo.signature);
 
     insnIdx = 0;
@@ -1156,39 +1116,35 @@ void dumpBytecodes(DexFile* pDexFile, const DexMethod* pDexMethod, int * mcount)
         insns += insnWidth;
         insnIdx += insnWidth;
     }
-    if (gOptions.disassemble)
-        //putchar('\n');
-        fputc('\n', gOptions.outputTarget);
 
-    *mcount += 1;
-    fflush(gOptions.outputTarget);
     free(className);
 }
 
 /*
  * Dump a "code" struct.
  */
-void dumpCode(DexFile* pDexFile, const DexMethod* pDexMethod, int * mcount)
+void dumpCode(DexFile* pDexFile, const DexMethod* pDexMethod)
 {
     const DexCode* pCode = dexGetCode(pDexFile, pDexMethod);
-    //printf("      registers     : %d\n", pCode->registersSize);
-    //printf("      ins           : %d\n", pCode->insSize);
-    //printf("      outs          : %d\n", pCode->outsSize);
-    //printf("      insns size    : %d 16-bit code units\n", pCode->insnsSize);
+
+    printf("      registers     : %d\n", pCode->registersSize);
+    printf("      ins           : %d\n", pCode->insSize);
+    printf("      outs          : %d\n", pCode->outsSize);
+    printf("      insns size    : %d 16-bit code units\n", pCode->insnsSize);
 
     if (gOptions.disassemble)
-        dumpBytecodes(pDexFile, pDexMethod, mcount);
+        dumpBytecodes(pDexFile, pDexMethod);
 
-    //dumpCatches(pDexFile, pCode);
-    ///* both of these are encoded in debug info */
-    //dumpPositions(pDexFile, pCode, pDexMethod);
-    //dumpLocals(pDexFile, pCode, pDexMethod);
+    dumpCatches(pDexFile, pCode);
+    /* both of these are encoded in debug info */
+    dumpPositions(pDexFile, pCode, pDexMethod);
+    dumpLocals(pDexFile, pCode, pDexMethod);
 }
 
 /*
  * Dump a method.
  */
-void dumpMethod(DexFile* pDexFile, const DexMethod* pDexMethod, int * mcount)
+void dumpMethod(DexFile* pDexFile, const DexMethod* pDexMethod, int i)
 {
     const DexMethodId* pMethodId;
     const char* backDescriptor;
@@ -1212,21 +1168,21 @@ void dumpMethod(DexFile* pDexFile, const DexMethod* pDexMethod, int * mcount)
                     kAccessForMethod);
 
     if (gOptions.outputFormat == OUTPUT_PLAIN) {
-        //printf("    #%d              : (in %s)\n", i, backDescriptor);
-        //printf("      name          : '%s'\n", name);
-        //printf("      type          : '%s'\n", typeDescriptor);
-        //printf("      access        : 0x%04x (%s)\n",
-        //    pDexMethod->accessFlags, accessStr);
+        printf("    #%d              : (in %s)\n", i, backDescriptor);
+        printf("      name          : '%s'\n", name);
+        printf("      type          : '%s'\n", typeDescriptor);
+        printf("      access        : 0x%04x (%s)\n",
+            pDexMethod->accessFlags, accessStr);
 
-        if (pDexMethod->codeOff != 0) {
-        //    printf("      code          : (none)\n");
-        //} else {
-        //    printf("      code          -\n");
-            dumpCode(pDexFile, pDexMethod, mcount);
+        if (pDexMethod->codeOff == 0) {
+            printf("      code          : (none)\n");
+        } else {
+            printf("      code          -\n");
+            dumpCode(pDexFile, pDexMethod);
         }
 
-        //if (gOptions.disassemble)
-        //    putchar('\n');
+        if (gOptions.disassemble)
+            putchar('\n');
     } else if (gOptions.outputFormat == OUTPUT_XML) {
         bool constructor = (name[0] == '<');
 
@@ -1265,15 +1221,15 @@ void dumpMethod(DexFile* pDexFile, const DexMethod* pDexMethod, int * mcount)
             printf(" synchronized=%s\n", quotedBool(isSync));
         }
 
-        //printf(" static=%s\n",
-        //    quotedBool((pDexMethod->accessFlags & ACC_STATIC) != 0));
-        //printf(" final=%s\n",
-        //    quotedBool((pDexMethod->accessFlags & ACC_FINAL) != 0));
+        printf(" static=%s\n",
+            quotedBool((pDexMethod->accessFlags & ACC_STATIC) != 0));
+        printf(" final=%s\n",
+            quotedBool((pDexMethod->accessFlags & ACC_FINAL) != 0));
         // "deprecated=" not knowable w/o parsing annotations
-        //printf(" visibility=%s\n",
-        //    quotedVisibility(pDexMethod->accessFlags));
-        //
-        //printf(">\n");
+        printf(" visibility=%s\n",
+            quotedVisibility(pDexMethod->accessFlags));
+
+        printf(">\n");
 
         /*
          * Parameters.
@@ -1401,7 +1357,7 @@ void dumpIField(const DexFile* pDexFile, const DexField* pIField, int i)
  * If "*pLastPackage" is NULL or does not match the current class' package,
  * the value will be replaced with a newly-allocated string.
  */
-void dumpClass(DexFile* pDexFile, int idx, char** pLastPackage, int* mcount)
+void dumpClass(DexFile* pDexFile, int idx, char** pLastPackage)
 {
     const DexTypeList* pInterfaces;
     const DexClassDef* pClassDef;
@@ -1485,17 +1441,17 @@ void dumpClass(DexFile* pDexFile, int idx, char** pLastPackage, int* mcount)
             dexStringByTypeIdx(pDexFile, pClassDef->superclassIdx);
     }
 
-    if (gOptions.outputFormat != OUTPUT_PLAIN) {
-    //    printf("Class #%d            -\n", idx);
-    //    printf("  Class descriptor  : '%s'\n", classDescriptor);
-    //    printf("  Access flags      : 0x%04x (%s)\n",
-    //        pClassDef->accessFlags, accessStr);
-    //
-    //    if (superclassDescriptor != NULL)
-    //        printf("  Superclass        : '%s'\n", superclassDescriptor);
-    //
-    //    printf("  Interfaces        -\n");
-    //} else {
+    if (gOptions.outputFormat == OUTPUT_PLAIN) {
+        printf("Class #%d            -\n", idx);
+        printf("  Class descriptor  : '%s'\n", classDescriptor);
+        printf("  Access flags      : 0x%04x (%s)\n",
+            pClassDef->accessFlags, accessStr);
+
+        if (superclassDescriptor != NULL)
+            printf("  Superclass        : '%s'\n", superclassDescriptor);
+
+        printf("  Interfaces        -\n");
+    } else {
         char* tmp;
 
         tmp = descriptorClassToDot(classDescriptor);
@@ -1519,32 +1475,33 @@ void dumpClass(DexFile* pDexFile, int idx, char** pLastPackage, int* mcount)
         printf(">\n");
     }
     pInterfaces = dexGetInterfacesList(pDexFile, pClassDef);
-    //if (pInterfaces != NULL) {
-    //    for (i = 0; i < (int) pInterfaces->size; i++)
-    //        dumpInterface(pDexFile, dexGetTypeItem(pInterfaces, i), i);
-    //}
-
-    //if (gOptions.outputFormat == OUTPUT_PLAIN)
-    //    printf("  Static fields     -\n");
-    //for (i = 0; i < (int) pClassData->header.staticFieldsSize; i++) {
-    //    dumpSField(pDexFile, &pClassData->staticFields[i], i);
-    //}
-
-    //if (gOptions.outputFormat == OUTPUT_PLAIN)
-    //    printf("  Instance fields   -\n");
-    //for (i = 0; i < (int) pClassData->header.instanceFieldsSize; i++) {
-    //    dumpIField(pDexFile, &pClassData->instanceFields[i], i);
-    //}
-
-    //if (gOptions.outputFormat == OUTPUT_PLAIN)
-    //    printf("  Direct methods    -\n");
-    for (i = 0; i < (int) pClassData->header.directMethodsSize; i++) {
-        dumpMethod(pDexFile, &pClassData->directMethods[i], mcount);
+    if (pInterfaces != NULL) {
+        for (i = 0; i < (int) pInterfaces->size; i++)
+            dumpInterface(pDexFile, dexGetTypeItem(pInterfaces, i), i);
     }
-    //if (gOptions.outputFormat == OUTPUT_PLAIN)
-    //    printf("  Virtual methods   -\n");
+
+    if (gOptions.outputFormat == OUTPUT_PLAIN)
+        printf("  Static fields     -\n");
+    for (i = 0; i < (int) pClassData->header.staticFieldsSize; i++) {
+        dumpSField(pDexFile, &pClassData->staticFields[i], i);
+    }
+
+    if (gOptions.outputFormat == OUTPUT_PLAIN)
+        printf("  Instance fields   -\n");
+    for (i = 0; i < (int) pClassData->header.instanceFieldsSize; i++) {
+        dumpIField(pDexFile, &pClassData->instanceFields[i], i);
+    }
+
+    if (gOptions.outputFormat == OUTPUT_PLAIN)
+        printf("  Direct methods    -\n");
+    for (i = 0; i < (int) pClassData->header.directMethodsSize; i++) {
+        dumpMethod(pDexFile, &pClassData->directMethods[i], i);
+    }
+
+    if (gOptions.outputFormat == OUTPUT_PLAIN)
+        printf("  Virtual methods   -\n");
     for (i = 0; i < (int) pClassData->header.virtualMethodsSize; i++) {
-        dumpMethod(pDexFile, &pClassData->virtualMethods[i], mcount);
+        dumpMethod(pDexFile, &pClassData->virtualMethods[i], i);
     }
 
     // TODO: Annotations.
@@ -1554,11 +1511,11 @@ void dumpClass(DexFile* pDexFile, int idx, char** pLastPackage, int* mcount)
     else
         fileName = "unknown";
 
-    //if (gOptions.outputFormat == OUTPUT_PLAIN) {
-    //    printf("  source_file_idx   : %d (%s)\n",
-    //        pClassDef->sourceFileIdx, fileName);
-    //    printf("\n");
-    //}
+    if (gOptions.outputFormat == OUTPUT_PLAIN) {
+        printf("  source_file_idx   : %d (%s)\n",
+            pClassDef->sourceFileIdx, fileName);
+        printf("\n");
+    }
 
     if (gOptions.outputFormat == OUTPUT_XML) {
         printf("</class>\n");
@@ -1777,7 +1734,6 @@ void dumpRegisterMaps(DexFile* pDexFile)
 void processDexFile(const char* fileName, DexFile* pDexFile)
 {
     char* package = NULL;
-    int mcount = 0;
     int i;
 
     if (gOptions.verbose) {
@@ -1802,7 +1758,7 @@ void processDexFile(const char* fileName, DexFile* pDexFile)
         if (gOptions.showSectionHeaders)
             dumpClassDef(pDexFile, i);
 
-        dumpClass(pDexFile, i, &package, &mcount);
+        dumpClass(pDexFile, i, &package);
     }
 
     /* free the last one allocated */
@@ -1866,9 +1822,9 @@ bail:
  */
 void usage(void)
 {
-    fprintf(stderr, "Copyright (C) 2007 The Android Open Source Project (Simplified output)\n\n");
+    fprintf(stderr, "Copyright (C) 2007 The Android Open Source Project\n\n");
     fprintf(stderr,
-        "%s: [-c] [-d] [-f] [-h] [-i] [-l layout] [-m] [-t tempfile] [-o outputfile] dexfile...\n",
+        "%s: [-c] [-d] [-f] [-h] [-i] [-l layout] [-m] [-t tempfile] dexfile...\n",
         gProgName);
     fprintf(stderr, "\n");
     fprintf(stderr, " -c : verify checksum and exit\n");
@@ -1879,7 +1835,6 @@ void usage(void)
     fprintf(stderr, " -l : output layout, either 'plain' or 'xml'\n");
     fprintf(stderr, " -m : dump register maps (and nothing else)\n");
     fprintf(stderr, " -t : temp file name (defaults to /sdcard/dex-temp-*)\n");
-    fprintf(stderr, " -o : output file name (defaults to stdout)\n");
 }
 
 /*
@@ -1893,11 +1848,10 @@ int main(int argc, char* const argv[])
     int ic;
 
     memset(&gOptions, 0, sizeof(gOptions));
-    gOptions.verbose = false;
-    gOptions.outputTarget = stdout;
+    gOptions.verbose = true;
 
     while (1) {
-        ic = getopt(argc, argv, "cdfhil:mt:o:");
+        ic = getopt(argc, argv, "cdfhil:mt:");
         if (ic < 0)
             break;
 
@@ -1934,10 +1888,6 @@ int main(int argc, char* const argv[])
         case 't':       // temp file, used when opening compressed Jar
             gOptions.tempFileName = optarg;
             break;
-        case 'o':
-            if ((gOptions.outputTarget = fopen(optarg, "w")) == NULL)
-                gOptions.outputTarget = stdout;
-            break;
         default:
             wantUsage = true;
             break;
@@ -1945,7 +1895,7 @@ int main(int argc, char* const argv[])
     }
 
     if (optind == argc) {
-        //fprintf(stderr, "%s: no file specified\n", gProgName);
+        fprintf(stderr, "%s: no file specified\n", gProgName);
         wantUsage = true;
     }
 
@@ -1964,8 +1914,5 @@ int main(int argc, char* const argv[])
         result |= process(argv[optind++]);
     }
 
-    if (gOptions.outputTarget != stdout && gOptions.outputTarget != NULL) {
-        fclose(gOptions.outputTarget);
-    }
     return (result != 0);
 }
